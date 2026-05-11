@@ -172,7 +172,20 @@ export default function Bidding() {
           </TouchableOpacity>
         ))}
       </View>
-
+<TouchableOpacity 
+       style={styles.allPassButton}
+        onPress={() => {
+        Alert.alert('Всички пасираха!', 'Ново раздаване!', [{
+        text: 'OK',
+        onPress: () => router.replace({
+        pathname: '/igra' as any,
+        params: { ...params, allPass: 'true', savedBids: JSON.stringify(bids) }
+      })
+    }]);
+  }}
+>
+  <Text style={styles.allPassButtonText}>🚫 Всички пасираха</Text>
+</TouchableOpacity>
       <Text style={styles.sectionTitle}>Специално:</Text>
       <View style={styles.levelsRow}>
         {['Контра', 'Реконтра'].map(level => (
@@ -215,31 +228,6 @@ export default function Bidding() {
         </View>
       )}
 
-      {/* Пас бутони */}
-      <View style={styles.passRow}>
-        <Text style={styles.passTitle}>Кой пасира?</Text>
-        <View style={styles.passButtons}>
-          {biddingOrder.map((playerNum) => (
-            <TouchableOpacity
-              key={playerNum}
-              style={[
-                styles.passButton,
-                passes.includes(playerNum) && styles.passButtonUsed
-              ]}
-              onPress={() => {
-                if (passes.includes(playerNum)) return;
-                handlePass(playerNum);
-              }}
-              disabled={passes.includes(playerNum)}
-            >
-              <Text style={styles.passButtonText}>
-                {passes.includes(playerNum) ? '✓' : playerNames[playerNum]}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
       {bids.length > 0 && (
         <ScrollView style={styles.bidsHistory}>
           <Text style={styles.bidsTitle}>📜 История:</Text>
@@ -258,6 +246,7 @@ export default function Bidding() {
       <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
         <Text style={styles.backButtonText}>← Назад без запазване</Text>
       </TouchableOpacity>
+      
     </View>
   );
 }
@@ -290,12 +279,6 @@ const styles = StyleSheet.create({
   team1Button: { flex: 1, backgroundColor: '#1a3a8a', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
   team2Button: { flex: 1, backgroundColor: '#8a1a1a', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
   confirmButtonText: { color: 'white', fontWeight: 'bold', fontSize: 14 },
-  passRow: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 12, marginBottom: 12 },
-  passTitle: { color: '#ff9090', fontSize: 13, marginBottom: 8, textAlign: 'center' },
-  passButtons: { flexDirection: 'row', gap: 8 },
-  passButton: { flex: 1, backgroundColor: 'rgba(255,0,0,0.3)', paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
-  passButtonUsed: { backgroundColor: 'rgba(100,100,100,0.3)' },
-  passButtonText: { color: 'white', fontSize: 11, fontWeight: 'bold', textAlign: 'center' },
   bidsHistory: { maxHeight: 80, backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 10, marginBottom: 10 },
   bidsTitle: { color: '#FFD700', fontSize: 14, fontWeight: 'bold', marginBottom: 5 },
   bidItem: { color: 'white', fontSize: 13, paddingVertical: 3 },
@@ -304,4 +287,6 @@ const styles = StyleSheet.create({
   saveButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   backButton: { backgroundColor: 'rgba(255,255,255,0.2)', paddingVertical: 10, borderRadius: 25, alignItems: 'center' },
   backButtonText: { color: 'white', fontSize: 14 },
+  allPassButton: { backgroundColor: 'rgba(255,0,0,0.3)', paddingVertical: 12, borderRadius: 25, alignItems: 'center', marginBottom: 8 },
+allPassButtonText: { color: '#ff9090', fontSize: 16, fontWeight: 'bold' },
 });
