@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { Share, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-const SERVER_URL = 'http://192.168.1.4:8000';
+const SERVER_URL = 'https://belot-server.onrender.com';
 
 export default function WaitingRoom() {
   const router = useRouter();
@@ -14,7 +14,7 @@ export default function WaitingRoom() {
   const player_id = params.player_id as string;
 
   useEffect(() => {
-    const ws = new WebSocket(`ws://192.168.1.4:8000/ws/${code}/${player_id}`);
+    const ws = new WebSocket(`wss://belot-server.onrender.com/ws/${code}/${player_id}`);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {

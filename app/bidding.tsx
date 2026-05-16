@@ -10,30 +10,11 @@ export default function Bidding() {
   const router = useRouter();
   const params = useLocalSearchParams();
 
-  const dealer = parseInt(params.dealer as string) || 1;
-  const igrach1 = params.igrach1 as string || 'Играч 1';
-  const igrach2 = params.igrach2 as string || 'Играч 2';
-  const igrach3 = params.igrach3 as string || 'Играч 3';
-  const igrach4 = params.igrach4 as string || 'Играч 4';
-
-  const playerNames: {[key: number]: string} = {
-    1: igrach1, 2: igrach2, 3: igrach3, 4: igrach4
-  };
-
-  // Редът на наддаване започва от играча след раздаващия
-  const biddingOrder = [
-    (dealer % 4) + 1,
-    ((dealer + 1) % 4) + 1,
-    ((dealer + 2) % 4) + 1,
-    ((dealer + 3) % 4) + 1,
-  ];
-
   const [selectedSuit, setSelectedSuit] = useState<string | null>(null);
   const [selectedLevel, setSelectedLevel] = useState<string | null>(null);
   const [bids, setBids] = useState<any[]>(
     params.currentBids ? JSON.parse(params.currentBids as string) : []
   );
-  const [passes, setPasses] = useState<number[]>([]);
 
   const suits = [
     { name: 'Спатия', emoji: '♣', color: '#1a3a1a' },
@@ -46,7 +27,7 @@ export default function Bidding() {
 
   const getLastNormalBid = () => {
     for (let i = bids.length - 1; i >= 0; i--) {
-      if (!bids[i].level) return bids[i];
+      if (!bids[i].level && bids[i].suit !== 'Пас') return bids[i];
     }
     return null;
   };
@@ -54,6 +35,7 @@ export default function Bidding() {
   const getLastBid = () => bids[bids.length - 1] || null;
 
   const isSuitDisabled = (suitName: string) => {
+    if (suitName === 'Пас') return false;
     const lastNormal = getLastNormalBid();
     if (!lastNormal) return false;
     return SUIT_ORDER[suitName] <= SUIT_ORDER[lastNormal.suit];
@@ -67,41 +49,14 @@ export default function Bidding() {
     return false;
   };
 
-  const handlePass = (playerNum: number) => {
-    const newPasses = [...passes, playerNum];
-    setPasses(newPasses);
-
-    // Ако всички 4 са пасирали → всички пас
-    if (newPasses.length === 4) {
-      Alert.alert('Всички пасираха!', 'Преминаваме към следващото раздаване.', [
-        {
-          text: 'OK',
-          onPress: () => router.replace({
-            pathname: '/igra' as any,
-            params: { ...params, allPass: 'true' }
-          })
-        }
-      ]);
-      return;
-    }
-
-    // Ако има бид и последните 3 са пасирали → играта е определена
-    if (getLastNormalBid() && newPasses.length >= 3) {
-      Alert.alert('Наддаването приключи!', `Играе се на ${getLastNormalBid()?.suit}`, [
-        {
-          text: 'Запази',
-          onPress: saveAndReturn
-        }
-      ]);
-    }
-  };
-
   const confirmBid = (team: number) => {
     const teamName = `Отбор ${team}`;
     let newBid: any;
 
     if (selectedLevel) {
       newBid = { team: teamName, bid: `${selectedLevel}!`, suit: '', level: selectedLevel };
+    } else if (selectedSuit === 'Пас') {
+      newBid = { team: teamName, bid: '🚫 Пас', suit: 'Пас', level: null };
     } else if (selectedSuit) {
       const suit = suits.find(s => s.name === selectedSuit);
       newBid = {
@@ -117,7 +72,6 @@ export default function Bidding() {
 
     const newBids = [...bids, newBid];
     setBids(newBids);
-    setPasses([]); // Нулираме пасовете след нов бид
     setSelectedSuit(null);
     setSelectedLevel(null);
   };
@@ -129,21 +83,30 @@ export default function Bidding() {
     });
   };
 
+  const allPassAndReturn = () => {
+    Alert.alert('Всички пасираха!', 'Ново раздаване!', [{
+      text: 'OK',
+      onPress: () => router.replace({
+        pathname: '/igra' as any,
+        params: { ...params, allPass: 'true', savedBids: JSON.stringify(bids) }
+      })
+    }]);
+  };
+
+  const lastNormalBid = getLastNormalBid();
+
   return (
     <View style={styles.container}>
       <Text style={styles.title}>🃏 Наддаване</Text>
-      <Text style={styles.dealerInfo}>Раздава: {playerNames[dealer]}</Text>
 
-      <Text style={styles.sectionTitle}>Ред на наддаване:</Text>
-      <View style={styles.biddingOrderRow}>
-        {biddingOrder.map((playerNum, i) => (
-          <View key={i} style={styles.playerOrderItem}>
-            <Text style={styles.playerOrderNum}>{i + 1}</Text>
-            <Text style={styles.playerOrderName}>{playerNames[playerNum]}</Text>
-            {passes.includes(playerNum) && <Text style={styles.passedBadge}>Пас</Text>}
-          </View>
-        ))}
-      </View>
+      {/* Показва текущата козова боя ако е обявена */}
+      {lastNormalBid && (
+        <View style={styles.currentBidBanner}>
+          <Text style={styles.currentBidText}>
+            Играе се на: {suits.find(s => s.name === lastNormalBid.suit)?.emoji} {lastNormalBid.suit}
+          </Text>
+        </View>
+      )}
 
       <Text style={styles.sectionTitle}>Избери боя:</Text>
       <View style={styles.suitsGrid}>
@@ -155,6 +118,7 @@ export default function Bidding() {
               { backgroundColor: suit.color },
               selectedSuit === suit.name && styles.suitButtonActive,
               isSuitDisabled(suit.name) && styles.suitButtonDisabled,
+              suit.name === 'Пас' && styles.pasButton,
             ]}
             onPress={() => {
               if (isSuitDisabled(suit.name)) {
@@ -215,40 +179,21 @@ export default function Bidding() {
         </View>
       )}
 
-      {/* Пас бутони */}
-      <View style={styles.passRow}>
-        <Text style={styles.passTitle}>Кой пасира?</Text>
-        <View style={styles.passButtons}>
-          {biddingOrder.map((playerNum) => (
-            <TouchableOpacity
-              key={playerNum}
-              style={[
-                styles.passButton,
-                passes.includes(playerNum) && styles.passButtonUsed
-              ]}
-              onPress={() => {
-                if (passes.includes(playerNum)) return;
-                handlePass(playerNum);
-              }}
-              disabled={passes.includes(playerNum)}
-            >
-              <Text style={styles.passButtonText}>
-                {passes.includes(playerNum) ? '✓' : playerNames[playerNum]}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      </View>
-
       {bids.length > 0 && (
         <ScrollView style={styles.bidsHistory}>
           <Text style={styles.bidsTitle}>📜 История:</Text>
           {bids.map((bid, i) => (
-            <Text key={i} style={[styles.bidItem, bid.level && styles.specialBid]}>
+            <Text key={i} style={[styles.bidItem, bid.level && styles.specialBid, bid.suit === 'Пас' && styles.pasBid]}>
               {bid.team}: {bid.bid}
             </Text>
           ))}
         </ScrollView>
+      )}
+
+      {!getLastNormalBid() && (
+        <TouchableOpacity style={styles.allPassButton} onPress={allPassAndReturn}>
+          <Text style={styles.allPassButtonText}>🚫 Всички пасираха</Text>
+        </TouchableOpacity>
       )}
 
       <TouchableOpacity style={styles.saveButton} onPress={saveAndReturn}>
@@ -264,18 +209,15 @@ export default function Bidding() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#1a5c2a', padding: 20, paddingTop: 60 },
-  title: { fontSize: 28, fontWeight: 'bold', color: 'white', textAlign: 'center', marginBottom: 5 },
-  dealerInfo: { color: '#FFD700', textAlign: 'center', fontSize: 14, marginBottom: 15 },
+  title: { fontSize: 28, fontWeight: 'bold', color: 'white', textAlign: 'center', marginBottom: 10 },
+  currentBidBanner: { backgroundColor: 'rgba(255,215,0,0.2)', borderRadius: 10, padding: 8, alignItems: 'center', marginBottom: 10 },
+  currentBidText: { color: '#FFD700', fontSize: 14, fontWeight: 'bold' },
   sectionTitle: { color: '#90EE90', fontSize: 14, marginBottom: 8 },
-  biddingOrderRow: { flexDirection: 'row', gap: 8, marginBottom: 15 },
-  playerOrderItem: { flex: 1, backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 8, padding: 8, alignItems: 'center' },
-  playerOrderNum: { color: '#FFD700', fontSize: 12, fontWeight: 'bold' },
-  playerOrderName: { color: 'white', fontSize: 11, textAlign: 'center' },
-  passedBadge: { color: '#ff6b6b', fontSize: 10, fontWeight: 'bold' },
   suitsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
   suitButton: { width: '30%', padding: 8, borderRadius: 12, alignItems: 'center', borderWidth: 2, borderColor: 'transparent' },
   suitButtonActive: { borderColor: '#FFD700' },
   suitButtonDisabled: { opacity: 0.3 },
+  pasButton: { width: '100%' },
   suitEmoji: { fontSize: 20 },
   suitName: { color: 'white', fontSize: 10, fontWeight: 'bold', marginTop: 2 },
   disabledText: { color: '#aaa' },
@@ -290,16 +232,13 @@ const styles = StyleSheet.create({
   team1Button: { flex: 1, backgroundColor: '#1a3a8a', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
   team2Button: { flex: 1, backgroundColor: '#8a1a1a', paddingVertical: 10, borderRadius: 10, alignItems: 'center' },
   confirmButtonText: { color: 'white', fontWeight: 'bold', fontSize: 14 },
-  passRow: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 12, marginBottom: 12 },
-  passTitle: { color: '#ff9090', fontSize: 13, marginBottom: 8, textAlign: 'center' },
-  passButtons: { flexDirection: 'row', gap: 8 },
-  passButton: { flex: 1, backgroundColor: 'rgba(255,0,0,0.3)', paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
-  passButtonUsed: { backgroundColor: 'rgba(100,100,100,0.3)' },
-  passButtonText: { color: 'white', fontSize: 11, fontWeight: 'bold', textAlign: 'center' },
-  bidsHistory: { maxHeight: 80, backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 10, marginBottom: 10 },
+  bidsHistory: { maxHeight: 100, backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 10, marginBottom: 10 },
   bidsTitle: { color: '#FFD700', fontSize: 14, fontWeight: 'bold', marginBottom: 5 },
   bidItem: { color: 'white', fontSize: 13, paddingVertical: 3 },
   specialBid: { color: '#FFD700', fontWeight: 'bold' },
+  pasBid: { color: '#ff9090' },
+  allPassButton: { backgroundColor: 'rgba(255,0,0,0.3)', paddingVertical: 12, borderRadius: 25, alignItems: 'center', marginBottom: 8 },
+  allPassButtonText: { color: '#ff9090', fontSize: 16, fontWeight: 'bold' },
   saveButton: { backgroundColor: '#4CAF50', paddingVertical: 12, borderRadius: 25, alignItems: 'center', marginBottom: 8 },
   saveButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   backButton: { backgroundColor: 'rgba(255,255,255,0.2)', paddingVertical: 10, borderRadius: 25, alignItems: 'center' },
