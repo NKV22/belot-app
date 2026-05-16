@@ -11,6 +11,7 @@ export default function RootLayout() {
       <Stack.Screen name="istoriq" options={{ headerShown: false }} />
       <Stack.Screen name="bidding" options={{ headerShown: false }} />
       <Stack.Screen name="rezultat" options={{ headerShown: false }} />
+      <Stack.Screen name="tablica" options={{ headerShown: false }} />
     </Stack>
   );
 }
