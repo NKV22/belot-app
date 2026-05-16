@@ -2,7 +2,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { Share, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-const SERVER_URL = 'https://nkv22-belotserver.hf.space';
+const SERVER_URL = 'https://belot-server.onrender.com';
 
 export default function WaitingRoom() {
   const router = useRouter();

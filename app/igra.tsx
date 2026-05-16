@@ -3,7 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
-const SERVER_URL = 'https://nkv22-belotserver.hf.space';
+const SERVER_URL = 'https://belot-server.onrender.com';
 
 const CARD_VALUES: {[key: string]: number} = {
   'A': 11, '10': 10, 'K': 4, 'Q': 3, 'J': 2, '9': 0, '8': 0, '7': 0,

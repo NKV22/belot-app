@@ -2,7 +2,7 @@ import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
 
-const SERVER_URL = 'https://nkv22-belotserver.hf.space';
+const SERVER_URL = 'https://belot-server.onrender.com';
 
 export default function Lobby() {
   const router = useRouter();
