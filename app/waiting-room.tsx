@@ -14,7 +14,7 @@ export default function WaitingRoom() {
   const player_id = params.player_id as string;
 
   useEffect(() => {
-    const ws = new WebSocket(`wss://nkv22-belotserver.hf.space/ws/${code}/${player_id}`);
+    const ws = new WebSocket(`wss://belot-server.onrender.com/ws/${code}/${player_id}`);
     wsRef.current = ws;
 
     ws.onmessage = (event) => {
