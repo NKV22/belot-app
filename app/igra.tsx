@@ -453,16 +453,6 @@ export default function Igra() {
               <Text style={styles.turnText}>🎯 На ход: {playerNames[currentTurn.toString()]}</Text>
             </View>
 
-            {/* Визуална рамка за сканиране */}
-            <View style={styles.scanFrame}>
-              <View style={[styles.corner, styles.cornerTL]} />
-              <View style={[styles.corner, styles.cornerTR]} />
-              <View style={[styles.corner, styles.cornerBL]} />
-              <View style={[styles.corner, styles.cornerBR]} />
-              <Text style={styles.scanText}>
-                {detectedCards.length > 0 ? '✅ Карти открити' : 'Насочи камерата към картите'}
-              </Text>
-            </View>
 
             <View style={styles.handDisplay}>
               <Text style={styles.handTitle}>Текуща ръка ({currentHandCards.length}/4):</Text>
@@ -630,29 +620,6 @@ const styles = StyleSheet.create({
   turnBanner: { backgroundColor: 'rgba(255,215,0,0.3)', borderRadius: 10, padding: 8, alignItems: 'center' },
   turnText: { color: '#FFD700', fontSize: 16, fontWeight: 'bold' },
 
-  // Рамка за сканиране
-  scanFrame: {
-    position: 'absolute',
-    top: '25%',
-    left: '10%',
-    right: '10%',
-    height: 180,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  corner: {
-    position: 'absolute',
-    width: 24,
-    height: 24,
-    borderColor: '#FFD700',
-    borderWidth: 3,
-  },
-  cornerTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 6 },
-  cornerTR: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0, borderTopRightRadius: 6 },
-  cornerBL: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 6 },
-  cornerBR: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 6 },
-  scanText: { color: 'rgba(255,255,255,0.8)', fontSize: 13, textAlign: 'center' },
 
   handDisplay: { backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 12, padding: 10 },
   handTitle: { color: '#90EE90', fontSize: 13, marginBottom: 8 },
