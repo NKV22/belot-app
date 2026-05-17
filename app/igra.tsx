@@ -154,7 +154,6 @@ const resolveConflicts = (seq1: any[], seq2: any[], four1: any[], four2: any[]) 
   return { fSeq1, fSeq2, fFour1, fFour2 };
 };
 
-// Показва карти на играч
 const PlayerCards = ({ playerId, history }: { playerId: string, history: {[key: string]: string[]} }) => {
   const cards = history[playerId] || [];
   if (cards.length === 0) return null;
@@ -190,9 +189,11 @@ export default function Igra() {
   const [kozSuit, setKozSuit] = useState('');
   const [kameraOtvorena, setKameraOtvorena] = useState(false);
   const [detectedCards, setDetectedCards] = useState<string[]>([]);
+  const [scanning, setScanning] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView>(null);
   const scanInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isCapturing = useRef(false);
 
   const igrach1 = params.igrach1 as string || 'Играч 1';
   const igrach2 = params.igrach2 as string || 'Играч 2';
@@ -369,16 +370,32 @@ export default function Igra() {
   const startScanning = async () => {
     if (!permission?.granted) await requestPermission();
     setKameraOtvorena(true);
+    setScanning(true);
+
+    // Изчакай камерата да се инициализира
+    await new Promise(resolve => setTimeout(resolve, 800));
+
     scanInterval.current = setInterval(async () => {
+      // Предотвратява паралелни заявки
+      if (isCapturing.current) return;
       if (!cameraRef.current) return;
+
+      isCapturing.current = true;
       try {
-        const photo = await cameraRef.current.takePictureAsync({ base64: false, quality: 0.5 });
+        const photo = await cameraRef.current.takePictureAsync({
+          base64: false,
+          quality: 0.4,
+          skipProcessing: true,  // БЕЗ шатър ефект и звук
+          shutterSound: false,   // БЕЗ звук
+        } as any);
+
         const formData = new FormData();
         formData.append('file', { uri: photo!.uri, type: 'image/jpeg', name: 'photo.jpg' } as any);
         const endpoint = code ? `${SERVER_URL}/scan/${code}/${player_id}` : `${SERVER_URL}/scan`;
         const response = await fetch(endpoint, { method: 'POST', body: formData });
         const data = await response.json();
         const newDetected = data.cards.map((c: any) => c.card);
+
         if (newDetected.length > 0) {
           setDetectedCards(newDetected);
           const newCards = newDetected.filter((card: string) => !previousCards.includes(card));
@@ -396,14 +413,23 @@ export default function Igra() {
               finishHand(newHandCards.slice(0, 4));
             }
           }
+        } else {
+          setDetectedCards([]);
         }
-      } catch (e) { console.log('Scan error:', e); }
-    }, 500);
+      } catch (e) {
+        console.log('Scan error:', e);
+      } finally {
+        isCapturing.current = false;
+      }
+    }, 800); // Сканира на всеки 800ms - по-плавно
   };
 
   const stopScanning = () => {
     if (scanInterval.current) clearInterval(scanInterval.current);
+    scanInterval.current = null;
+    isCapturing.current = false;
     setKameraOtvorena(false);
+    setScanning(false);
     setDetectedCards([]);
   };
 
@@ -417,11 +443,27 @@ export default function Igra() {
   if (kameraOtvorena) {
     return (
       <View style={styles.container}>
-        <CameraView style={styles.camera} ref={cameraRef}>
+        <CameraView
+          style={styles.camera}
+          ref={cameraRef}
+          // Без мигане и ефекти
+        >
           <View style={styles.cameraOverlay}>
             <View style={styles.turnBanner}>
               <Text style={styles.turnText}>🎯 На ход: {playerNames[currentTurn.toString()]}</Text>
             </View>
+
+            {/* Визуална рамка за сканиране */}
+            <View style={styles.scanFrame}>
+              <View style={[styles.corner, styles.cornerTL]} />
+              <View style={[styles.corner, styles.cornerTR]} />
+              <View style={[styles.corner, styles.cornerBL]} />
+              <View style={[styles.corner, styles.cornerBR]} />
+              <Text style={styles.scanText}>
+                {detectedCards.length > 0 ? '✅ Карти открити' : 'Насочи камерата към картите'}
+              </Text>
+            </View>
+
             <View style={styles.handDisplay}>
               <Text style={styles.handTitle}>Текуща ръка ({currentHandCards.length}/4):</Text>
               <View style={styles.handCards}>
@@ -433,9 +475,10 @@ export default function Igra() {
                 ))}
               </View>
             </View>
+
             <View style={styles.cardsDisplay}>
               {detectedCards.length === 0 ? (
-                <Text style={styles.noCards}>Насочи камерата към масата...</Text>
+                <Text style={styles.noCards}>Търся карти...</Text>
               ) : (
                 <View style={styles.cardsRow}>
                   {detectedCards.map((card, i) => (
@@ -444,6 +487,7 @@ export default function Igra() {
                 </View>
               )}
             </View>
+
             <TouchableOpacity style={styles.closeButton} onPress={stopScanning}>
               <Text style={styles.closeButtonText}>✕ Спри сканирането</Text>
             </TouchableOpacity>
@@ -475,18 +519,14 @@ export default function Igra() {
 
       {/* Маса */}
       <View style={styles.masa}>
-
-        {/* Горен играч */}
         <View style={styles.topPlayer}>
           <Text style={[styles.playerName, currentTurn === 2 && styles.activeTurn]}>
-            {/* 🃏 показва кой раздава */}
             {dealer === 2 ? '🃏 ' : ''}{igrach2}{currentTurn === 2 ? ' 🎯' : ''}
           </Text>
           <PlayerCards playerId="2" history={cardsHistory} />
         </View>
 
         <View style={styles.middleRow}>
-          {/* Ляв играч */}
           <View style={styles.sidePlayer}>
             <Text style={[styles.playerName, currentTurn === 1 && styles.activeTurn]}>
               {dealer === 1 ? '🃏 ' : ''}{igrach1}{currentTurn === 1 ? ' 🎯' : ''}
@@ -494,7 +534,6 @@ export default function Igra() {
             <PlayerCards playerId="1" history={cardsHistory} />
           </View>
 
-          {/* Центъра на масата */}
           <View style={styles.centerMasa}>
             {currentHandCards.length === 0 ? (
               <><Text style={styles.centerText}>🃏</Text><Text style={styles.centerSubText}>Маса</Text></>
@@ -508,7 +547,6 @@ export default function Igra() {
             )}
           </View>
 
-          {/* Десен играч */}
           <View style={styles.sidePlayer}>
             <Text style={[styles.playerName, currentTurn === 3 && styles.activeTurn]}>
               {dealer === 3 ? '🃏 ' : ''}{igrach3}{currentTurn === 3 ? ' 🎯' : ''}
@@ -517,7 +555,6 @@ export default function Igra() {
           </View>
         </View>
 
-        {/* Долен играч */}
         <View style={styles.bottomPlayer}>
           <PlayerCards playerId="4" history={cardsHistory} />
           <Text style={[styles.playerName, currentTurn === 4 && styles.activeTurn]}>
@@ -592,6 +629,31 @@ const styles = StyleSheet.create({
   cameraOverlay: { flex: 1, justifyContent: 'flex-end', padding: 20, gap: 8 },
   turnBanner: { backgroundColor: 'rgba(255,215,0,0.3)', borderRadius: 10, padding: 8, alignItems: 'center' },
   turnText: { color: '#FFD700', fontSize: 16, fontWeight: 'bold' },
+
+  // Рамка за сканиране
+  scanFrame: {
+    position: 'absolute',
+    top: '25%',
+    left: '10%',
+    right: '10%',
+    height: 180,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  corner: {
+    position: 'absolute',
+    width: 24,
+    height: 24,
+    borderColor: '#FFD700',
+    borderWidth: 3,
+  },
+  cornerTL: { top: 0, left: 0, borderRightWidth: 0, borderBottomWidth: 0, borderTopLeftRadius: 6 },
+  cornerTR: { top: 0, right: 0, borderLeftWidth: 0, borderBottomWidth: 0, borderTopRightRadius: 6 },
+  cornerBL: { bottom: 0, left: 0, borderRightWidth: 0, borderTopWidth: 0, borderBottomLeftRadius: 6 },
+  cornerBR: { bottom: 0, right: 0, borderLeftWidth: 0, borderTopWidth: 0, borderBottomRightRadius: 6 },
+  scanText: { color: 'rgba(255,255,255,0.8)', fontSize: 13, textAlign: 'center' },
+
   handDisplay: { backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 12, padding: 10 },
   handTitle: { color: '#90EE90', fontSize: 13, marginBottom: 8 },
   handCards: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
@@ -611,7 +673,6 @@ const styles = StyleSheet.create({
   centerInfo: { alignItems: 'center' },
   oborContainer: { backgroundColor: '#FFD700', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 15, marginBottom: 3 },
   oborText: { color: '#1a5c2a', fontWeight: 'bold', fontSize: 14 },
-  kozText: { color: 'white', fontSize: 11, marginBottom: 2 },
   handsText: { color: '#90EE90', fontSize: 10 },
   masa: { flex: 1, justifyContent: 'space-between', padding: 20 },
   topPlayer: { alignItems: 'center' },
