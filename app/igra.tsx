@@ -1,9 +1,28 @@
-import { CameraView, useCameraPermissions } from "expo-camera";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { useTensorflowModel } from "react-native-fast-tflite";
+import {
+  Camera,
+  runAtTargetFps,
+  useCameraDevice,
+  useCameraPermission,
+  useFrameProcessor,
+} from "react-native-vision-camera";
+import { Worklets } from "react-native-worklets-core";
+import { useResizePlugin } from "vision-camera-resize-plugin";
 
-const SERVER_URL = 'https://belot-server.onrender.com';
+const CARD_CLASSES: string[] = [
+  '10C','10D','10H','10S',   // 0-3
+  '7C','7D','7H','7S',       // 4-7
+  '8C','8D','8H','8S',       // 8-11
+  '9C','9D','9H','9S',       // 12-15
+  'AC','AD','AH','AS',       // 16-19
+  'DS',                       // 20  <- боклук клас (филтрира се по-долу)
+  'JC','JD','JH','JS',       // 21-24
+  'KC','KD','KH','KS',       // 25-28
+  'QC','QD','QH','QS',       // 29-32
+];
 
 const CARD_VALUES: {[key: string]: number} = {
   'A': 11, '10': 10, 'K': 4, 'Q': 3, 'J': 2, '9': 0, '8': 0, '7': 0,
@@ -189,11 +208,19 @@ export default function Igra() {
   const [kozSuit, setKozSuit] = useState('');
   const [kameraOtvorena, setKameraOtvorena] = useState(false);
   const [detectedCards, setDetectedCards] = useState<string[]>([]);
-  const [scanning, setScanning] = useState(false);
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<CameraView>(null);
-  const scanInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const isCapturing = useRef(false);
+
+  // --- On-device модел + камера ---
+  const { hasPermission, requestPermission } = useCameraPermission();
+  const device = useCameraDevice("back");
+  const { resize } = useResizePlugin();
+  const tflite = useTensorflowModel(require("../assets/cards.tflite"), []);
+  const model = tflite.state === "loaded" ? tflite.model : undefined;
+
+  // ref с актуалния state, за да го чете worklet callback-ът без stale closure
+  const liveRef = useRef({ currentHandCards, previousCards, currentTurn });
+  useEffect(() => {
+    liveRef.current = { currentHandCards, previousCards, currentTurn };
+  }, [currentHandCards, previousCards, currentTurn]);
 
   const igrach1 = params.igrach1 as string || 'Играч 1';
   const igrach2 = params.igrach2 as string || 'Играч 2';
@@ -367,69 +394,76 @@ export default function Igra() {
     setPreviousCards([]);
   };
 
-  const startScanning = async () => {
-    if (!permission?.granted) await requestPermission();
-    setKameraOtvorena(true);
-    setScanning(true);
+  // --- Дедуп логиката ти (същата), само чете от liveRef ---
+  const handleDetected = (newDetected: string[]) => {
+    setDetectedCards(newDetected);
+    const { currentHandCards, previousCards, currentTurn } = liveRef.current;
 
-    // Изчакай камерата да се инициализира
-    await new Promise(resolve => setTimeout(resolve, 800));
+    const newCards = newDetected.filter((card) => !previousCards.includes(card));
+    if (newCards.length === 0) return;
 
-    scanInterval.current = setInterval(async () => {
-      // Предотвратява паралелни заявки
-      if (isCapturing.current) return;
-      if (!cameraRef.current) return;
+    const newHandCards = [
+      ...currentHandCards,
+      ...newCards.map((card) => ({ card, playerId: currentTurn.toString() })),
+    ];
+    const ci = turnOrder.indexOf(currentTurn.toString());
+    setCurrentTurn(parseInt(turnOrder[(ci + 1) % 4]));
+    setCurrentHandCards(newHandCards);
+    setPreviousCards(newDetected);
 
-      isCapturing.current = true;
-      try {
-        const photo = await cameraRef.current.takePictureAsync({
-          base64: false,
-          quality: 0.4,
-          skipProcessing: true,  // БЕЗ шатър ефект и звук
-          shutterSound: false,   // БЕЗ звук
-        } as any);
+    if (newHandCards.length >= 4) {
+      stopScanning();
+      finishHand(newHandCards.slice(0, 4));
+    }
+  };
 
-        const formData = new FormData();
-        formData.append('file', { uri: photo!.uri, type: 'image/jpeg', name: 'photo.jpg' } as any);
-        const endpoint = code ? `${SERVER_URL}/scan/${code}/${player_id}` : `${SERVER_URL}/scan`;
-        const response = await fetch(endpoint, { method: 'POST', body: formData });
-        const data = await response.json();
-        const newDetected = data.cards.map((c: any) => c.card);
+  // мост от worklet (frame processor) към JS thread-а
+  const onDetected = Worklets.createRunOnJS(handleDetected);
 
-        if (newDetected.length > 0) {
-          setDetectedCards(newDetected);
-          const newCards = newDetected.filter((card: string) => !previousCards.includes(card));
-          if (newCards.length > 0) {
-            const newHandCards = [
-              ...currentHandCards,
-              ...newCards.map((card: string) => ({ card, playerId: currentTurn.toString() }))
-            ];
-            const ci = turnOrder.indexOf(currentTurn.toString());
-            setCurrentTurn(parseInt(turnOrder[(ci + 1) % 4]));
-            setCurrentHandCards(newHandCards);
-            setPreviousCards(newDetected);
-            if (newHandCards.length >= 4) {
-              stopScanning();
-              finishHand(newHandCards.slice(0, 4));
-            }
-          }
-        } else {
-          setDetectedCards([]);
+  const CONF = 0.5; // праг на увереност
+
+  const frameProcessor = useFrameProcessor((frame) => {
+    "worklet";
+    if (model == null) return;
+
+    // ~4 инференции/сек стигат за карти и пестят батерия
+    runAtTargetFps(4, () => {
+      "worklet";
+      const resized = resize(frame, {
+        scale: { width: 640, height: 640 },
+        pixelFormat: "rgb",
+        dataType: "float32",
+      }) as unknown as Float32Array;
+
+      // нормализация 0-255 → 0-1 (YOLO го очаква)
+      const input = new Float32Array(resized.length);
+      for (let i = 0; i < resized.length; i++) input[i] = resized[i] / 255;
+
+      const outputs = model.runSync([input as any]);
+      const dets = outputs[0] as unknown as Float32Array; // (1,300,6) → по 6: x1,y1,x2,y2,conf,classId
+
+      const found: string[] = [];
+      for (let i = 0; i < dets.length; i += 6) {
+        const conf = dets[i + 4];
+        if (conf > CONF) {
+          const cls = Math.round(dets[i + 5]);
+          const name = CARD_CLASSES[cls];
+          // прескочи боклука "DS" + дублите (всяка карта е уникална)
+          if (name && name !== "DS" && found.indexOf(name) === -1) found.push(name);
         }
-      } catch (e) {
-        console.log('Scan error:', e);
-      } finally {
-        isCapturing.current = false;
       }
-    }, 800); // Сканира на всеки 800ms - по-плавно
+
+      if (found.length > 0) onDetected(found);
+    });
+  }, [model]);
+
+  const startScanning = async () => {
+    if (!hasPermission) await requestPermission();
+    setKameraOtvorena(true);
   };
 
   const stopScanning = () => {
-    if (scanInterval.current) clearInterval(scanInterval.current);
-    scanInterval.current = null;
-    isCapturing.current = false;
     setKameraOtvorena(false);
-    setScanning(false);
     setDetectedCards([]);
   };
 
@@ -441,48 +475,62 @@ export default function Igra() {
   };
 
   if (kameraOtvorena) {
-    return (
-      <View style={styles.container}>
-        <CameraView
-          style={styles.camera}
-          ref={cameraRef}
-          // Без мигане и ефекти
-        >
+    if (device == null) {
+      return (
+        <View style={styles.container}>
           <View style={styles.cameraOverlay}>
-            <View style={styles.turnBanner}>
-              <Text style={styles.turnText}>🎯 На ход: {playerNames[currentTurn.toString()]}</Text>
-            </View>
-
-
-            <View style={styles.handDisplay}>
-              <Text style={styles.handTitle}>Текуща ръка ({currentHandCards.length}/4):</Text>
-              <View style={styles.handCards}>
-                {currentHandCards.map((pc, i) => (
-                  <View key={i} style={styles.handCard}>
-                    <Text style={styles.handCardCard}>{pc.card}</Text>
-                    <Text style={styles.handCardPlayer}>{playerNames[pc.playerId]}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.cardsDisplay}>
-              {detectedCards.length === 0 ? (
-                <Text style={styles.noCards}>Търся карти...</Text>
-              ) : (
-                <View style={styles.cardsRow}>
-                  {detectedCards.map((card, i) => (
-                    <Text key={i} style={styles.detectedCard}>{card}</Text>
-                  ))}
-                </View>
-              )}
-            </View>
-
+            <Text style={styles.noCards}>Няма достъп до камера…</Text>
             <TouchableOpacity style={styles.closeButton} onPress={stopScanning}>
-              <Text style={styles.closeButtonText}>✕ Спри сканирането</Text>
+              <Text style={styles.closeButtonText}>✕ Назад</Text>
             </TouchableOpacity>
           </View>
-        </CameraView>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.container}>
+        <Camera
+          style={styles.camera}
+          device={device}
+          isActive={kameraOtvorena}
+          frameProcessor={frameProcessor}
+          pixelFormat="yuv"
+        />
+        {/* Camera не приема деца → overlay-ят е абсолютен слой отгоре */}
+        <View style={[styles.cameraOverlay, StyleSheet.absoluteFill]}>
+          <View style={styles.turnBanner}>
+            <Text style={styles.turnText}>🎯 На ход: {playerNames[currentTurn.toString()]}</Text>
+          </View>
+
+
+          <View style={styles.handDisplay}>
+            <Text style={styles.handTitle}>Текуща ръка ({currentHandCards.length}/4):</Text>
+            <View style={styles.handCards}>
+              {currentHandCards.map((pc, i) => (
+                <View key={i} style={styles.handCard}>
+                  <Text style={styles.handCardCard}>{pc.card}</Text>
+                  <Text style={styles.handCardPlayer}>{playerNames[pc.playerId]}</Text>
+                </View>
+              ))}
+            </View>
+          </View>
+
+          <View style={styles.cardsDisplay}>
+            {detectedCards.length === 0 ? (
+              <Text style={styles.noCards}>Търся карти...</Text>
+            ) : (
+              <View style={styles.cardsRow}>
+                {detectedCards.map((card, i) => (
+                  <Text key={i} style={styles.detectedCard}>{card}</Text>
+                ))}
+              </View>
+            )}
+          </View>
+
+          <TouchableOpacity style={styles.closeButton} onPress={stopScanning}>
+            <Text style={styles.closeButtonText}>✕ Спри сканирането</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
