@@ -1,24 +1,20 @@
-import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import * as ImageManipulator from "expo-image-manipulator";
+import { Buffer } from "buffer";
+import jpeg from "jpeg-js";
 import { useTensorflowModel } from "react-native-fast-tflite";
-import {
-  Camera,
-  runAtTargetFps,
-  useCameraDevice,
-  useCameraPermission,
-  useFrameProcessor,
-} from "react-native-vision-camera";
-import { Worklets } from "react-native-worklets-core";
-import { useResizePlugin } from "vision-camera-resize-plugin";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import { useRef, useState, useEffect } from "react";
+import { Alert, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 
+// Редът е ТОЧНО от model.names (33 класа, DS е боклук на индекс 20)
 const CARD_CLASSES: string[] = [
   '10C','10D','10H','10S',   // 0-3
   '7C','7D','7H','7S',       // 4-7
   '8C','8D','8H','8S',       // 8-11
   '9C','9D','9H','9S',       // 12-15
   'AC','AD','AH','AS',       // 16-19
-  'DS',                       // 20  <- боклук клас (филтрира се по-долу)
+  'DS',                       // 20
   'JC','JD','JH','JS',       // 21-24
   'KC','KD','KH','KS',       // 25-28
   'QC','QD','QH','QS',       // 29-32
@@ -33,27 +29,10 @@ const CARD_VALUES_KOZ: {[key: string]: number} = {
 const KOZ_MAP: {[key: string]: string} = {
   'Пика': 'S', 'Купа': 'H', 'Каро': 'D', 'Спатия': 'C'
 };
-const SUIT_EMOJI: {[key: string]: string} = {
-  'Пика': '♠', 'Купа': '♥', 'Каро': '♦', 'Спатия': '♣',
-  'Без Коз': '🃏', 'Всичко Коз': '👑', '': '?'
-};
 
-interface PlayedCard {
-  card: string;
-  playerId: string;
-}
-interface Hand {
-  cards: PlayedCard[];
-  ledSuit: string;
-  winnerId: string;
-}
-interface Deal {
-  razdavane: number;
-  koz: string;
-  pts1: number;
-  pts2: number;
-  note: string;
-}
+interface PlayedCard { card: string; playerId: string; }
+interface Hand { cards: PlayedCard[]; ledSuit: string; winnerId: string; }
+interface Deal { razdavane: number; koz: string; pts1: number; pts2: number; note: string; }
 
 const getCardValue = (card: string, kozSuit: string, gameType: string): number => {
   const value = card.slice(0, -1);
@@ -178,13 +157,10 @@ const PlayerCards = ({ playerId, history }: { playerId: string, history: {[key: 
   if (cards.length === 0) return null;
   return (
     <View style={playerCardStyles.row}>
-      {cards.map((card, i) => (
-        <Text key={i} style={playerCardStyles.card}>{card}</Text>
-      ))}
+      {cards.map((card, i) => (<Text key={i} style={playerCardStyles.card}>{card}</Text>))}
     </View>
   );
 };
-
 const playerCardStyles = StyleSheet.create({
   row: { flexDirection: 'row', flexWrap: 'wrap', gap: 2, justifyContent: 'center', marginTop: 3, maxWidth: 80 },
   card: { backgroundColor: 'rgba(255,255,255,0.15)', color: 'white', fontSize: 8, paddingHorizontal: 3, paddingVertical: 1, borderRadius: 3 },
@@ -201,26 +177,17 @@ export default function Igra() {
   const [deals, setDeals] = useState<Deal[]>([]);
   const [hangingPoints, setHangingPoints] = useState({ otbor1: 0, otbor2: 0 });
   const [currentHandCards, setCurrentHandCards] = useState<PlayedCard[]>([]);
-  const [previousCards, setPreviousCards] = useState<string[]>([]);
   const [cardsHistory, setCardsHistory] = useState<{[key: string]: string[]}>({});
   const [hands, setHands] = useState<Hand[]>([]);
   const [bids, setBids] = useState<any[]>([]);
   const [kozSuit, setKozSuit] = useState('');
   const [kameraOtvorena, setKameraOtvorena] = useState(false);
-  const [detectedCards, setDetectedCards] = useState<string[]>([]);
+  const [scanning, setScanning] = useState(false);
 
-  // --- On-device модел + камера ---
-  const { hasPermission, requestPermission } = useCameraPermission();
-  const device = useCameraDevice("back");
-  const { resize } = useResizePlugin();
+  const [permission, requestPermission] = useCameraPermissions();
+  const cameraRef = useRef<CameraView>(null);
   const tflite = useTensorflowModel(require("../assets/cards.tflite"), []);
   const model = tflite.state === "loaded" ? tflite.model : undefined;
-
-  // ref с актуалния state, за да го чете worklet callback-ът без stale closure
-  const liveRef = useRef({ currentHandCards, previousCards, currentTurn });
-  useEffect(() => {
-    liveRef.current = { currentHandCards, previousCards, currentTurn };
-  }, [currentHandCards, previousCards, currentTurn]);
 
   const igrach1 = params.igrach1 as string || 'Играч 1';
   const igrach2 = params.igrach2 as string || 'Играч 2';
@@ -229,14 +196,10 @@ export default function Igra() {
   const code = params.code as string;
   const player_id = params.player_id as string;
 
-  const playerNames: {[key: string]: string} = {
-    '1': igrach1, '2': igrach2, '3': igrach3, '4': igrach4
-  };
+  const playerNames: {[key: string]: string} = { '1': igrach1, '2': igrach2, '3': igrach3, '4': igrach4 };
   const players = {
-    '1': { name: igrach1, team: 1 },
-    '2': { name: igrach2, team: 2 },
-    '3': { name: igrach3, team: 1 },
-    '4': { name: igrach4, team: 2 },
+    '1': { name: igrach1, team: 1 }, '2': { name: igrach2, team: 2 },
+    '3': { name: igrach3, team: 1 }, '4': { name: igrach4, team: 2 },
   };
   const turnOrder = ['2', '3', '4', '1'];
   const nextDealer = (d: number) => (d % 4) + 1;
@@ -252,9 +215,7 @@ export default function Igra() {
   }, [params.savedBids, params.allPass]);
 
   useEffect(() => {
-    if (hands.length === 8) {
-      calculateAndSaveDeal();
-    }
+    if (hands.length === 8) calculateAndSaveDeal();
   }, [hands]);
 
   const calculateAndSaveDeal = () => {
@@ -317,7 +278,6 @@ export default function Igra() {
       final2 = total2 * kontra;
       setHangingPoints({ otbor1: 0, otbor2: 0 });
     }
-
     if (kapo1) note += ' 🎯Капо';
     if (kapo2) note += ' 🎯Капо';
 
@@ -342,12 +302,7 @@ export default function Igra() {
     setDealer(newDealer);
     setRazdavane(prev => prev + 1);
     setCurrentTurn((newDealer % 4) + 1);
-    setBids([]);
-    setKozSuit('');
-    setCurrentHandCards([]);
-    setPreviousCards([]);
-    setCardsHistory({});
-    setHands([]);
+    setBids([]); setKozSuit(''); setCurrentHandCards([]); setCardsHistory({}); setHands([]);
   };
 
   const determineWinner = (handCards: PlayedCard[], ledSuit: string): string => {
@@ -384,151 +339,123 @@ export default function Igra() {
       return updated;
     });
     setCurrentTurn(parseInt(winnerId));
-
-    Alert.alert(
-      '✅ Ръката приключи!',
-      `${playerNames[winnerId]} спечели ръката!`,
-      [{ text: 'OK' }]
-    );
+    Alert.alert('✅ Ръката приключи!', `${playerNames[winnerId]} спечели ръката!`, [{ text: 'OK' }]);
     setCurrentHandCards([]);
-    setPreviousCards([]);
   };
 
-  // --- Дедуп логиката ти (същата), само чете от liveRef ---
-  const handleDetected = (newDetected: string[]) => {
-    setDetectedCards(newDetected);
-    const { currentHandCards, previousCards, currentTurn } = liveRef.current;
+  // === Снимка на ръката → разпознаване → разпределяне по позиция ===
+  const scanHand = async () => {
+    if (!cameraRef.current || model == null || scanning) return;
+    setScanning(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.9, skipProcessing: true });
+      if (!photo) { setScanning(false); return; }
 
-    const newCards = newDetected.filter((card) => !previousCards.includes(card));
-    if (newCards.length === 0) return;
+      // намали до 640x640 (native, бързо) и вземи base64
+      const manip = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 640, height: 640 } }],
+        { base64: true, format: ImageManipulator.SaveFormat.JPEG }
+      );
 
-    const newHandCards = [
-      ...currentHandCards,
-      ...newCards.map((card) => ({ card, playerId: currentTurn.toString() })),
-    ];
-    const ci = turnOrder.indexOf(currentTurn.toString());
-    setCurrentTurn(parseInt(turnOrder[(ci + 1) % 4]));
-    setCurrentHandCards(newHandCards);
-    setPreviousCards(newDetected);
+      // декодирай JPEG → RGBA пиксели
+      const raw = Buffer.from(manip.base64 as string, "base64");
+      const decoded = jpeg.decode(raw, { useTArray: true });
 
-    if (newHandCards.length >= 4) {
-      stopScanning();
-      finishHand(newHandCards.slice(0, 4));
-    }
-  };
-
-  // мост от worklet (frame processor) към JS thread-а
-  const onDetected = Worklets.createRunOnJS(handleDetected);
-
-  const CONF = 0.5; // праг на увереност
-
-  const frameProcessor = useFrameProcessor((frame) => {
-    "worklet";
-    if (model == null) return;
-
-    // ~4 инференции/сек стигат за карти и пестят батерия
-    runAtTargetFps(4, () => {
-      "worklet";
-      const resized = resize(frame, {
-        scale: { width: 640, height: 640 },
-        pixelFormat: "rgb",
-        dataType: "float32",
-      }) as unknown as Float32Array;
-
-      // нормализация 0-255 → 0-1 (YOLO го очаква)
-      const input = new Float32Array(resized.length);
-      for (let i = 0; i < resized.length; i++) input[i] = resized[i] / 255;
-
-      const outputs = model.runSync([input as any]);
-      const dets = outputs[0] as unknown as Float32Array; // (1,300,6) → по 6: x1,y1,x2,y2,conf,classId
-
-      const found: string[] = [];
-      for (let i = 0; i < dets.length; i += 6) {
-        const conf = dets[i + 4];
-        if (conf > CONF) {
-          const cls = Math.round(dets[i + 5]);
-          const name = CARD_CLASSES[cls];
-          // прескочи боклука "DS" + дублите (всяка карта е уникална)
-          if (name && name !== "DS" && found.indexOf(name) === -1) found.push(name);
-        }
+      // изгради вход 640x640x3 float32, нормализиран 0-1
+      const input = new Float32Array(640 * 640 * 3);
+      for (let i = 0, j = 0; j < input.length; i += 4, j += 3) {
+        input[j] = decoded.data[i] / 255;
+        input[j + 1] = decoded.data[i + 1] / 255;
+        input[j + 2] = decoded.data[i + 2] / 255;
       }
 
-      if (found.length > 0) onDetected(found);
-    });
-  }, [model]);
+      const outputs = model.runSync([input.buffer]);
+      const dets = new Float32Array(outputs[0] as any); // (1,300,6): x1,y1,x2,y2,conf,cls
 
-  const startScanning = async () => {
-    if (!hasPermission) await requestPermission();
+      // събери уникалните карти (най-висока увереност за всяка)
+      const best: {[card: string]: { card: string; cx: number; cy: number; conf: number }} = {};
+      for (let i = 0; i < dets.length; i += 6) {
+        const conf = dets[i + 4];
+        if (conf < 0.5) continue;
+        const cls = Math.round(dets[i + 5]);
+        const name = CARD_CLASSES[cls];
+        if (!name || name === "DS") continue;
+        const cx = (dets[i] + dets[i + 2]) / 2;
+        const cy = (dets[i + 1] + dets[i + 3]) / 2;
+        if (!best[name] || conf > best[name].conf) best[name] = { card: name, cx, cy, conf };
+      }
+      const cards = Object.values(best);
+      if (cards.length < 4) {
+        Alert.alert("Опитай пак", `Разпознах ${cards.length} карти. Нагласи телефона да се виждат и 4-те ясно.`);
+        setScanning(false);
+        return;
+      }
+
+      // разпредели по позиция спрямо центъра на четирите карти
+      const cxAvg = cards.reduce((s, d) => s + d.cx, 0) / cards.length;
+      const cyAvg = cards.reduce((s, d) => s + d.cy, 0) / cards.length;
+      const byPlayer: {[pid: string]: { card: string; conf: number }} = {};
+      for (const d of cards) {
+        const dx = d.cx - cxAvg, dy = d.cy - cyAvg;
+        let pid: string;
+        if (Math.abs(dy) >= Math.abs(dx)) pid = dy > 0 ? '1' : '3'; // долу=1, горе=3
+        else pid = dx > 0 ? '2' : '4';                              // дясно=2, ляво=4
+        if (!byPlayer[pid] || d.conf > byPlayer[pid].conf) byPlayer[pid] = { card: d.card, conf: d.conf };
+      }
+
+      if (Object.keys(byPlayer).length !== 4) {
+        Alert.alert("Опитай пак", "Картите не са разположени ясно в четирите посоки (долу/горе/ляво/дясно). Нагласи ги и снимай пак.");
+        setScanning(false);
+        return;
+      }
+
+      // подреди в ред на игра, започвайки от този на ход (той води боята)
+      const startIdx = turnOrder.indexOf(currentTurn.toString());
+      const orderedPlayers = [0, 1, 2, 3].map(k => turnOrder[(startIdx + k) % 4]);
+      const handCards: PlayedCard[] = orderedPlayers.map(pid => ({ card: byPlayer[pid].card, playerId: pid }));
+
+      setCurrentHandCards(handCards);
+      setKameraOtvorena(false);
+      finishHand(handCards);
+    } catch (e: any) {
+      Alert.alert("Грешка при сканиране", String(e?.message || e));
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const openCamera = async () => {
+    if (!permission?.granted) {
+      const res = await requestPermission();
+      if (!res.granted) return;
+    }
     setKameraOtvorena(true);
   };
-
-  const stopScanning = () => {
-    setKameraOtvorena(false);
-    setDetectedCards([]);
-  };
-
-  const clearTable = () => {
-    Alert.alert('Изчисти масата', 'Сигурен ли си?', [
-      { text: 'Не' },
-      { text: 'Да', onPress: () => { setCurrentHandCards([]); setPreviousCards([]); } }
-    ]);
-  };
+  const closeCamera = () => setKameraOtvorena(false);
 
   if (kameraOtvorena) {
-    if (device == null) {
-      return (
-        <View style={styles.container}>
-          <View style={styles.cameraOverlay}>
-            <Text style={styles.noCards}>Няма достъп до камера…</Text>
-            <TouchableOpacity style={styles.closeButton} onPress={stopScanning}>
-              <Text style={styles.closeButtonText}>✕ Назад</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      );
-    }
     return (
       <View style={styles.container}>
-        <Camera
-          style={styles.camera}
-          device={device}
-          isActive={kameraOtvorena}
-          frameProcessor={frameProcessor}
-          pixelFormat="yuv"
-        />
-        {/* Camera не приема деца → overlay-ят е абсолютен слой отгоре */}
+        <CameraView ref={cameraRef} style={styles.camera} animateShutter={false} />
         <View style={[styles.cameraOverlay, StyleSheet.absoluteFill]}>
           <View style={styles.turnBanner}>
-            <Text style={styles.turnText}>🎯 На ход: {playerNames[currentTurn.toString()]}</Text>
+            <Text style={styles.turnText}>🎯 Води: {playerNames[currentTurn.toString()]}</Text>
           </View>
-
-
-          <View style={styles.handDisplay}>
-            <Text style={styles.handTitle}>Текуща ръка ({currentHandCards.length}/4):</Text>
-            <View style={styles.handCards}>
-              {currentHandCards.map((pc, i) => (
-                <View key={i} style={styles.handCard}>
-                  <Text style={styles.handCardCard}>{pc.card}</Text>
-                  <Text style={styles.handCardPlayer}>{playerNames[pc.playerId]}</Text>
-                </View>
-              ))}
-            </View>
+          <View style={styles.guideBox}>
+            <Text style={styles.guideText}>Снимай 4-те карти на масата{"\n"}твоята да е най-долу</Text>
           </View>
-
-          <View style={styles.cardsDisplay}>
-            {detectedCards.length === 0 ? (
-              <Text style={styles.noCards}>Търся карти...</Text>
-            ) : (
-              <View style={styles.cardsRow}>
-                {detectedCards.map((card, i) => (
-                  <Text key={i} style={styles.detectedCard}>{card}</Text>
-                ))}
-              </View>
-            )}
-          </View>
-
-          <TouchableOpacity style={styles.closeButton} onPress={stopScanning}>
-            <Text style={styles.closeButtonText}>✕ Спри сканирането</Text>
+          <TouchableOpacity
+            style={[styles.captureButton, scanning && styles.captureDisabled]}
+            onPress={scanHand}
+            disabled={scanning || model == null}
+          >
+            <Text style={styles.captureButtonText}>
+              {model == null ? "Зарежда модел..." : scanning ? "⏳ Разпознавам..." : "📸 Снимай ръката"}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.closeButton} onPress={closeCamera}>
+            <Text style={styles.closeButtonText}>✕ Затвори</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -537,122 +464,59 @@ export default function Igra() {
 
   return (
     <View style={styles.container}>
-      {/* Горна лента */}
       <View style={styles.rezultatBar}>
-        <View style={styles.otborScore}>
-          <Text style={styles.otborIme}>Отбор 1</Text>
-          <Text style={styles.score}>{totalScores.otbor1}</Text>
-        </View>
+        <View style={styles.otborScore}><Text style={styles.otborIme}>Отбор 1</Text><Text style={styles.score}>{totalScores.otbor1}</Text></View>
         <View style={styles.centerInfo}>
-          <View style={styles.oborContainer}>
-            <Text style={styles.oborText}>Раздаване {razdavane}</Text>
-          </View>
+          <View style={styles.oborContainer}><Text style={styles.oborText}>Раздаване {razdavane}</Text></View>
           <Text style={styles.handsText}>{hands.length}/8 ръце</Text>
         </View>
-        <View style={styles.otborScore}>
-          <Text style={styles.otborIme}>Отбор 2</Text>
-          <Text style={styles.score}>{totalScores.otbor2}</Text>
-        </View>
+        <View style={styles.otborScore}><Text style={styles.otborIme}>Отбор 2</Text><Text style={styles.score}>{totalScores.otbor2}</Text></View>
       </View>
 
-      {/* Маса */}
       <View style={styles.masa}>
         <View style={styles.topPlayer}>
-          <Text style={[styles.playerName, currentTurn === 2 && styles.activeTurn]}>
-            {dealer === 2 ? '🃏 ' : ''}{igrach2}{currentTurn === 2 ? ' 🎯' : ''}
-          </Text>
-          <PlayerCards playerId="2" history={cardsHistory} />
+          <Text style={[styles.playerName, currentTurn === 3 && styles.activeTurn]}>{dealer === 3 ? '🃏 ' : ''}{igrach3}{currentTurn === 3 ? ' 🎯' : ''}</Text>
+          <PlayerCards playerId="3" history={cardsHistory} />
         </View>
-
         <View style={styles.middleRow}>
           <View style={styles.sidePlayer}>
-            <Text style={[styles.playerName, currentTurn === 1 && styles.activeTurn]}>
-              {dealer === 1 ? '🃏 ' : ''}{igrach1}{currentTurn === 1 ? ' 🎯' : ''}
-            </Text>
-            <PlayerCards playerId="1" history={cardsHistory} />
+            <Text style={[styles.playerName, currentTurn === 4 && styles.activeTurn]}>{dealer === 4 ? '🃏 ' : ''}{igrach4}{currentTurn === 4 ? ' 🎯' : ''}</Text>
+            <PlayerCards playerId="4" history={cardsHistory} />
           </View>
-
           <View style={styles.centerMasa}>
             {currentHandCards.length === 0 ? (
               <><Text style={styles.centerText}>🃏</Text><Text style={styles.centerSubText}>Маса</Text></>
             ) : (
-              <>
-                <Text style={styles.handCount}>{currentHandCards.length}/4</Text>
-                {currentHandCards.map((pc, i) => (
-                  <Text key={i} style={styles.masaCard}>{pc.card}</Text>
-                ))}
-              </>
+              <><Text style={styles.handCount}>{currentHandCards.length}/4</Text>
+                {currentHandCards.map((pc, i) => (<Text key={i} style={styles.masaCard}>{pc.card}</Text>))}</>
             )}
           </View>
-
           <View style={styles.sidePlayer}>
-            <Text style={[styles.playerName, currentTurn === 3 && styles.activeTurn]}>
-              {dealer === 3 ? '🃏 ' : ''}{igrach3}{currentTurn === 3 ? ' 🎯' : ''}
-            </Text>
-            <PlayerCards playerId="3" history={cardsHistory} />
+            <Text style={[styles.playerName, currentTurn === 2 && styles.activeTurn]}>{dealer === 2 ? '🃏 ' : ''}{igrach2}{currentTurn === 2 ? ' 🎯' : ''}</Text>
+            <PlayerCards playerId="2" history={cardsHistory} />
           </View>
         </View>
-
         <View style={styles.bottomPlayer}>
-          <PlayerCards playerId="4" history={cardsHistory} />
-          <Text style={[styles.playerName, currentTurn === 4 && styles.activeTurn]}>
-            {dealer === 4 ? '🃏 ' : ''}{igrach4}{currentTurn === 4 ? ' 🎯' : ''}
-          </Text>
+          <PlayerCards playerId="1" history={cardsHistory} />
+          <Text style={[styles.playerName, currentTurn === 1 && styles.activeTurn]}>{dealer === 1 ? '🃏 ' : ''}{igrach1}{currentTurn === 1 ? ' 🎯' : ''}</Text>
         </View>
       </View>
 
-      {/* Бутони */}
       <View style={styles.buttons}>
-        <TouchableOpacity style={styles.cameraButton} onPress={startScanning}>
+        <TouchableOpacity style={styles.cameraButton} onPress={openCamera}>
           <Text style={styles.cameraButtonText}>📷 Сканирай ръка</Text>
         </TouchableOpacity>
         <View style={styles.bottomButtons}>
-          <TouchableOpacity
-            style={styles.historyButton}
-            onPress={() => router.push({
-              pathname: '/istoriq' as any,
-              params: { history: JSON.stringify(cardsHistory), players: JSON.stringify(players), hands: JSON.stringify(hands) }
-            })}
-          >
+          <TouchableOpacity style={styles.historyButton} onPress={() => router.push({ pathname: '/istoriq' as any, params: { history: JSON.stringify(cardsHistory), players: JSON.stringify(players), hands: JSON.stringify(hands) } })}>
             <Text style={styles.historyButtonText}>📋</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.biddingButton}
-            onPress={() => router.push({
-              pathname: '/bidding' as any,
-              params: { code, player_id, igrach1, igrach2, igrach3, igrach4, currentBids: JSON.stringify(bids), dealer: dealer.toString() }
-            })}
-          >
+          <TouchableOpacity style={styles.biddingButton} onPress={() => router.push({ pathname: '/bidding' as any, params: { code, player_id, igrach1, igrach2, igrach3, igrach4, currentBids: JSON.stringify(bids), dealer: dealer.toString() } })}>
             <Text style={styles.biddingButtonText}>🎯 Наддаване</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.rezultatButton}
-            onPress={() => router.push({
-              pathname: '/rezultat' as any,
-              params: {
-                history: JSON.stringify(cardsHistory),
-                players: JSON.stringify(players),
-                bids: JSON.stringify(bids),
-                hands: JSON.stringify(hands),
-                totalScores: JSON.stringify(totalScores),
-                hangingPoints: JSON.stringify(hangingPoints),
-                deals: JSON.stringify(deals),
-                lastObor: hands.length === 8 ? 'true' : 'false',
-              }
-            })}
-          >
+          <TouchableOpacity style={styles.rezultatButton} onPress={() => router.push({ pathname: '/rezultat' as any, params: { history: JSON.stringify(cardsHistory), players: JSON.stringify(players), bids: JSON.stringify(bids), hands: JSON.stringify(hands), totalScores: JSON.stringify(totalScores), hangingPoints: JSON.stringify(hangingPoints), deals: JSON.stringify(deals), lastObor: hands.length === 8 ? 'true' : 'false' } })}>
             <Text style={styles.rezultatButtonText}>🏆</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.tablicaButton}
-            onPress={() => router.push({
-              pathname: '/tablica' as any,
-              params: { deals: JSON.stringify(deals), totalScores: JSON.stringify(totalScores) }
-            })}
-          >
+          <TouchableOpacity style={styles.tablicaButton} onPress={() => router.push({ pathname: '/tablica' as any, params: { deals: JSON.stringify(deals), totalScores: JSON.stringify(totalScores) } })}>
             <Text style={styles.tablicaButtonText}>📊</Text>
           </TouchableOpacity>
         </View>
@@ -664,21 +528,14 @@ export default function Igra() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#1a5c2a' },
   camera: { flex: 1 },
-  cameraOverlay: { flex: 1, justifyContent: 'flex-end', padding: 20, gap: 8 },
+  cameraOverlay: { flex: 1, justifyContent: 'flex-end', padding: 20, gap: 12 },
   turnBanner: { backgroundColor: 'rgba(255,215,0,0.3)', borderRadius: 10, padding: 8, alignItems: 'center' },
   turnText: { color: '#FFD700', fontSize: 16, fontWeight: 'bold' },
-
-
-  handDisplay: { backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 12, padding: 10 },
-  handTitle: { color: '#90EE90', fontSize: 13, marginBottom: 8 },
-  handCards: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  handCard: { backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 8, padding: 6, alignItems: 'center' },
-  handCardCard: { color: '#FFD700', fontWeight: 'bold', fontSize: 14 },
-  handCardPlayer: { color: '#90EE90', fontSize: 10 },
-  cardsDisplay: { backgroundColor: 'rgba(0,0,0,0.7)', padding: 12, borderRadius: 12 },
-  cardsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  noCards: { color: '#aaa', fontSize: 13, fontStyle: 'italic' },
-  detectedCard: { backgroundColor: '#FFD700', color: '#1a5c2a', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, fontWeight: 'bold', fontSize: 14 },
+  guideBox: { backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 10, padding: 10 },
+  guideText: { color: 'white', fontSize: 13, textAlign: 'center' },
+  captureButton: { backgroundColor: '#FFD700', paddingVertical: 16, borderRadius: 25, alignItems: 'center' },
+  captureDisabled: { backgroundColor: 'rgba(255,215,0,0.4)' },
+  captureButtonText: { color: '#1a5c2a', fontSize: 18, fontWeight: 'bold' },
   closeButton: { backgroundColor: 'rgba(200,0,0,0.8)', paddingVertical: 14, borderRadius: 25, alignItems: 'center' },
   closeButtonText: { color: 'white', fontSize: 16, fontWeight: 'bold' },
   rezultatBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.3)', padding: 15, paddingTop: 50 },
