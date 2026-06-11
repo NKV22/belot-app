@@ -47,9 +47,9 @@
         }
       ],
       [
-        "react-native-vision-camera",
+        "expo-camera",
         {
-          "cameraPermissionText": "Камерата е нужна за разпознаване на картите."
+          "cameraPermission": "Камерата е нужна за разпознаване на картите."
         }
       ],
       [
